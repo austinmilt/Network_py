@@ -1,3 +1,13 @@
+# custom
+*.pyc
+*.ldb
+info
+*.csv
+*.mdb
+*.gdb
+*.shp
+*.tif
+
 # Windows image file caches
 Thumbs.db
 ehthumbs.db
