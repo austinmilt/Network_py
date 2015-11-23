@@ -24,6 +24,9 @@
 
 # ~~ GLOBAL CONSTANTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
+# OrderedObject
+ORD_DID = 0
+
 # Structure
 STR_FPR = 0.0
 
@@ -61,57 +64,39 @@ class OrderedObject:
     upstream OrderedObject.
     """
     
-    def __init__(self, **attributes):
+    def __init__(self, id=ORD_DID, **attributes):
         
         # set attributes using defaults and user overrides
         P = {
-            'up': set(), # set of next upstream OrderedObjects
-            'down': self # next downstream OrderedObjects
+            'down': self, # next downstream OrderedObjects
         }
+        P['id'] = id
         P.update(dict((k.lower(), attributes[k]) for k in attributes))
-        setattr(self, 'up', P['up'])
-        setattr(self, 'down', P['down'])
+        for k in P: setattr(self, k, P[k])
             
 
-    def trace_up(self, types=set()):
-        """
-        Traces upstream of this OrderedObject and returns all upstream 
-        OrderedObjects.
-        
-        INPUTS:
-            types   = list, set, or tuple of types to return. Can be any type 
-                with OrderedObject parent class
-                
-        OUTPUTS: set() of all upstream OrderedObjects
-        """
-        types = tuple(types)
-        upstreamObjects = set()
-        toTrace = set()
-        toTrace.update(self.up)
-        while len(toTrace) > 0:
-            curObj = toTrace.pop()
-            if isinstance(curObj, types):
-                upstreamObjects.add(curObj)
-            toTrace.update(curObj.up)
-            
-        return upstreamObjects
-        
-    
-    def trace_down(self, types=set()):
+    def trace_down(self, levels=None, types=None):
         """
         Traces downstream of this Structure and returns all downstream
         Structures
         
         INPUTS:
-            types   = list, set, or tuple of types to return. Can be any type 
-                with Structure parent class
+            levels  = (optional) number of levels to trace downstream. Default
+                (None) is all levels until the last object is reached.
                 
-        OUTPUTS: ordered list of all downstream structures
+            types   = (optional) list, set, or tuple of types to return. Can 
+                be any type with OrderedObject parent class. Default is any 
+                OrderedObject
+                
+        OUTPUTS: ordered list of all downstream OrderedObjects
         """
+        if types is None: types = OrderedObject
         types = tuple(types)
         curObj = self
         downstreamObjects = []
-        while curObj.down is not curObj:
+        count = 0
+        while (curObj.down is not curObj) and any((count < levels, levels is None)):
+            count += 1
             if isinstance(curObj.down, types):
                 downstreamObjects.append(curObj.down)
             curObj = curObj.down
@@ -121,18 +106,89 @@ class OrderedObject:
         
     def __setattr__(self, attribute, value):
     
-        # update properties of downstream object and self
+        # error checking
         if attribute == 'down':
-            self.__dict__['down'] = value
-            if value is not None:
-                if not isinstance(value, OrderedObject):
-                    raise TypeError('Downstream objects must be a sub-class of OrderedObject.')
-                value.up.add(self)
+            if not isinstance(value, OrderedObject):
+                raise TypeError('Downstream objects must be a sub-class of OrderedObject.')
                 
-        # handle other attributes
+        # handle other attribute assignments
         self.__dict__[attribute] = value
+        
+        
+    def __repr__(self):
+        return '%s %s' % (self.__class__.__name__, str(self.id))
+        
+        
+        
+# ~~ ORDERED COLLECTION ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+class OrderedCollection(OrderedObject):
+    """
+    OrderedCollection is a collection of OrderedObjects with methods to contain
+    and trace along elements.
+    """
 
-
+    def __init__(self, objects):
+    
+        OrderedObject.__init__(self)
+        
+        # add objects to the set
+        self.objects = set()
+        for obj in objects:    
+            if not isinstance(obj, OrderedObject):
+                raise TypeError('OrderedCollections can only contain OrderedObjects.')
+            self.objects.add(obj)
+        self.first_up()
+    
+    
+    def first_up(self):
+        """
+        Initializes upstream tracing by finding the set of nearest upstream
+        objects for each object. Sets the self.up dictionary in place.
+        """
+        self.__dict__['up'] = {}
+        for obj in self.objects:
+            if obj not in self.up: self.up[obj] = set()
+            if obj.down not in self.up: self.up[obj.down] = set()
+            if obj.down is not obj: self.up[obj.down].add(obj)
+        
+    
+    def trace_up(self, startingObject, levels=None, types=(OrderedObject,)):
+        """
+        Traces upstream from an object to all its upstream objects of a
+        specified type.
+        
+        INPUTS:
+            levels  = (optional) number of levels to trace upstream. Default
+                (None) is all levels until the first object is reached.
+                
+            types   = (optional) list, set, or tuple of types to return. Can 
+                be any type with OrderedObject parent class. Default is any 
+                OrderedObject
+                
+        OUTPUTS: set of all upstream objects of the starting object
+        """
+        toTrace = [(obj, 0) for obj in self.up[startingObject]]
+        upstreamObjects = set()
+        while (len(toTrace) > 0) and any((toTrace[0][1] < levels, levels is None)):
+            obj, level = toTrace.pop(0)
+            if isinstance(obj, types):
+                upstreamObjects.add(obj)
+                
+            # update remaining trace list
+            toTrace.extend([(newObj, level+1) for newObj in self.up[obj]])
+        
+        return upstreamObjects
+        
+        
+    def __setattr__(self, attribute, value):
+        
+        if attribute == 'up':
+            print 'Use the first_up() method to set the up{} dictionary.'
+        
+        else:
+            self.__dict__[attribute] = value
+        
+    
     
 # ~~ STRUCTURE ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #            
 class Structure(OrderedObject):
@@ -142,6 +198,8 @@ class Structure(OrderedObject):
     """
     
     def __init__(self, **attributes):
+    
+        OrderedObject.__init__(self)
         
         # set attributes using defaults and user overrides
         P = {
@@ -163,7 +221,7 @@ class Barrier(Structure):
     """
     
     def __init__(self, **attributes):
-        super(Barrier, self).__init__()
+        Structure.__init__(self)
         
         # set attributes using defaults and user overrides
         P = {
