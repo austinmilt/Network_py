@@ -31,7 +31,12 @@ ORD_DID = 0
 STR_FPR = 0.0
 
 # Barrier
-BAR_PAS = 0.0 # default passability for undefined fishes/guilds
+BAR_CST = None
+
+# Dam
+DAM_WID = None
+DAM_LEN = None
+DAM_HIT = None
 
 # load_data()
 LOD_DAT_BAR = 'barriers'
@@ -199,7 +204,7 @@ class Structure(OrderedObject):
     
     def __init__(self, **attributes):
     
-        OrderedObject.__init__(self)
+        OrderedObject.__init__(self, **attributes)
         
         # set attributes using defaults and user overrides
         P = {
@@ -210,9 +215,18 @@ class Structure(OrderedObject):
         P.update(dict((k.lower(), attributes[k]) for k in attributes))
         for attribute in P:
             setattr(self, attribute, P[attribute])
-
+        
+        
+    def __setattr__(self, attribute, value):
+    
+        if attribute == 'fprop':
+            if (value < 0) or (value > 1):
+                raise ValueError('fprop attribute must be between 0 and 1.')
             
-
+        self.__dict__[attribute] = value
+        
+        
+            
 # ~~ BARRIER ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 class Barrier(Structure):
     """
@@ -221,25 +235,57 @@ class Barrier(Structure):
     """
     
     def __init__(self, **attributes):
-        Structure.__init__(self)
+        Structure.__init__(self, **attributes)
         
         # set attributes using defaults and user overrides
         P = {
-            'pass': {} # dictionary where keys are fish/guilds and values are passabilities
+            'passabilities': {} # dictionary where keys are fish/guilds and values are passabilities
+            'cost': BAR_CST # cost of making barrier totally passable (be e.g. removal)
         }
         P.update(dict((k.lower(), attributes[k]) for k in attributes))
         for attribute in P:
             setattr(self, attribute, P[attribute])
 
-
-# ~~ DAM ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-class Dam(Structure):
-    """
-    Dams are one type of Structure with built in dimensional and removal cost
-    attributes.
-    """
-    pass
     
+    def __setattr__(self, attribute, value):
+        
+        if attribute == 'passabilities':
+            for k in value:
+                if (value[k] < 0) or (value[k] > 1):
+                    raise ValueError('passabilities must be between 0 and 1.')
+            
+        self.__dict__[attribute] = value
+
+        
+        
+# ~~ DAM ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+class Dam(Barrier):
+    """
+    Dams are one type of Barrier with built in dimensional attributes.
+    """
+    
+    def __init__(self, **attributes):
+        Barrier.__init__(self, **attributes)
+    
+        # set attributes using defaults and user overrides
+        P = {
+            'width': DAM_WID # river-spanning width of dam
+            'height': DAM_HIT, # vertical height of dam
+            'length': DAM_LEN, # up- to down-stream length of dam
+        }
+        P.update(dict((k.lower(), attributes[k]) for k in attributes))
+        for attribute in P:
+            setattr(self, attribute, P[attribute])
+    
+    
+    def __setattr__(self, attribute, value):
+    
+        if attribute in ('width', 'height', 'length'):
+            if (value is not None) and (value < 0):
+                raise ValueError('Dam dimensions must be non-negative.')
+    
+    
+        self.__dict__[attribute] = value
             
         
         
@@ -317,8 +363,21 @@ def create_hydrography(data):
 
 if __name__ == '__main__':
 
-    pass
+    A = Barrier(id=1,reach='a',country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
+    B = Barrier(id=2,reach='b',country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
+    C = Barrier(id=3,reach='c',country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
+    D = Barrier(id=4,reach='a',country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
+    E = Barrier(id=5,reach='e',country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
+    F = Barrier(id=6,reach='f',country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
     
+    A.down = D
+    B.down = E
+    C.down = E
+    D.down = F
+    E.down = F
+    
+    network = OrderedCollection([A,B,C,D,E,F])
+
     ## load the database
     ## pass into create_hydrography
     import pdb; pdb.set_trace()
