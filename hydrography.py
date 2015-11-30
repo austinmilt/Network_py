@@ -15,6 +15,7 @@ ORD_DID = 0
 
 # Reach
 RCH_LEN = None
+RCH_SIZ = None
 
 # Structure
 STR_FPR = 0.0
@@ -40,6 +41,8 @@ CAT_ARE = None
 # load_data()
 LOD_DAT_BAR = 'barriers'
 LOD_DAT_FLO = 'flowlines'
+LOD_DAT_CAT = 'catchments'
+LOD_DAT_TRB = 'tributaries'
 LOD_FLD_BID = 'BID'
 LOD_FLD_BDS = 'BID_DS'
 LOD_FLD_RID = 'RID'
@@ -55,10 +58,36 @@ LOD_FLD_P10 = 'PASS10'
 LOD_FLD_RDS = 'RID_DS'
 LOD_FLD_TID = 'TID'
 LOD_FLD_CAT = 'HydroID'
+LOD_FLD_CDS = 'HydroID_DS'
 LOD_FLD_WSA = 'WSAKM2'
 LOD_FLD_LEN = 'Shape_Length'
+LOD_FLD_STO = 'STRAHLER'
 LOD_VAL_SLF = -1
 
+# create_hydrography()
+CRH_DAT_BAR = 'barriers'
+CRH_DAT_FLO = 'flowlines'
+CRH_DAT_CAT = 'catchments'
+CRH_DAT_TRB = 'tributaries'
+CRH_FLD_BID = 'bid'
+CRH_FLD_BDS = 'bds'
+CRH_FLD_RID = 'rid'
+CRH_FLD_NAT = 'nation'
+CRH_FLD_LAK = 'lake'
+CRH_FLD_FPR = 'fprop'
+CRH_FLD_HAB = 'habitat'
+CRH_FLD_CST = 'cost'
+CRH_FLD_LAM = 'lamp'
+CRH_FLD_P04 = 'passlow'
+CRH_FLD_P07 = 'passmid'
+CRH_FLD_P10 = 'passhigh'
+CRH_FLD_RDS = 'rds'
+CRH_FLD_TID = 'tid'
+CRH_FLD_CAT = 'cid'
+CRH_FLD_CDS = 'cds'
+CRH_FLD_WSA = 'area'
+CRH_FLD_LEN = 'length'
+CRH_FLD_STO = 'size'
 
 
 # ########################################################################### #
@@ -434,6 +463,7 @@ class Reach(OrderedCollection):
         # set attributes using defaults and user overrides
         P = {
             'length': RCH_LEN, # reach segment length
+            'size': RCH_SIZ, # reach size (stream order)
             'catchment': None, # Catchment in which self is found
             'tributary': None # Tributary in which self is found
         }
@@ -710,7 +740,7 @@ class Lake(OrderedCollection):
         
 
 
-            
+        
 # ########################################################################### #
 # ################################ FUNCTIONS ################################ #
 # ########################################################################### #
@@ -730,6 +760,10 @@ def load_data(database, **options):
                 LOD_DAT_BAR
             flowlines: name of the flowlines dataset in the database. Default
                 LOD_DAT_FLO
+            catchments: name of the catchments dataset in the database. Default
+                is LOD_DAT_CAT
+            tributaries: name of the tributaries dataset in the database.
+                Default is LOD_DAT_TRB
             bid_field: unique barrier ID field in barriers dataset. Default is
                 LOD_FLD_BID
             bds_field: barrier downstream ID field in barriers dataset. Default
@@ -738,8 +772,6 @@ def load_data(database, **options):
                 Default is LOD_FLD_RID
             nat_field: country of location of barrier in barriers dataset.
                 Default is LOD_FLD_NAT
-            lak_field: lake of catchment in which barrier is located in
-                barriers dataset. Default is LOD_FLD_LAK
             fpr_field: proportion along flowline field in barriers dataset.
                 Default is LOD_FLD_FPR
             hab_field: upstream habitat field in barriers dataset. Default is
@@ -756,21 +788,160 @@ def load_data(database, **options):
                 LOD_FLD_P10
             rds_field: flowline ID field of next downstream flowline in 
                 flowlines dataset. Default is LOD_FLD_RDS
-            tid_field: tributary ID field in flowlines dataset.
+            tid_field: tributary ID field in flowlines and tributaries dataset.
                 Default is LOD_FLD_TID
-            cat_field: catchment ID field in flowlines dataset. Default is 
-                LOD_FLD_CAT
-            wsa_field: flowline's watershed area field in flowlines dataset.
-                Default is LOD_FLD_WSA
+            cat_field: catchment ID field in flowlines and catchments dataset. 
+                Default is LOD_FLD_CAT
+            cds_field: catchment downstream ID field in catchments dataset.
+                Default is LOD_FLD_CDS
             len_field: flowline's length field in flowlines dataset. Default
                 is LOD_FLD_LEN
+            sto_field: flowline's stream order field in flowlines dataset.
+                Default is LOD_FLD_STO
+            wsa_field: catchment's area field in catchments dataset. Default
+                is LOD_FLD_WSA
+            lak_field: lake into which tributary flows in tributaries dataset. 
+                Default is LOD_FLD_LAK
+            slf_value: value that indicates the downstream barrier, flowline,
+                or catchment is itself. Default is LOD_VAL_SLF
+                
+    OUTPUT: a dictionary formatted for create_hydrography()
     """
-    pass
     
-    ## flowlines's watershed area is same as catchment's total area in km2
-    ## 
+    # imports
+    import arcpy, os
+    
+    # update options
+    P = {
+        'barriers': LOD_DAT_BAR, 'flowlines': LOD_DAT_FLO,
+        'catchments': LOD_DAT_CAT, 'tributaries': LOD_DAT_TRB, 
+        'bid_field': LOD_FLD_BID, 'bds_field': LOD_FLD_BDS,
+        'rid_field': LOD_FLD_RID, 'nat_field': LOD_FLD_NAT,
+        'fpr_field': LOD_FLD_FPR, 'hab_field': LOD_FLD_HAB,
+        'cst_field': LOD_FLD_CST, 'lam_field': LOD_FLD_LAM,
+        'low_field': LOD_FLD_P04, 'mid_field': LOD_FLD_P07,
+        'hih_field': LOD_FLD_P10, 'rds_field': LOD_FLD_RDS,
+        'tid_field': LOD_FLD_TID, 'cat_field': LOD_FLD_CAT,
+        'len_field': LOD_FLD_LEN, 'sto_field': LOD_FLD_STO,
+        'wsa_field': LOD_FLD_WSA, 'lak_field': LOD_FLD_LAK,
+        'cds_field': LOD_FLD_CDS, 'slf_value': LOD_VAL_SLF
+        
+    }
+    for k in options: P[k.lower()] = options[k]
+    
+    
+    # ~~ DEFINE CONSTANTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    
+    # define datasets for loading
+    datasets = {
+        'barriers': os.path.join(database, P['barriers']),
+        'flowlines': os.path.join(database, P['flowlines']),
+        'catchments': os.path.join(database, P['catchments']),
+        'tributaries': os.path.join(database, P['tributaries'])
+    }
+    
+    # define fields to load for each dataset
+    fields = {
+        'barriers': (
+            'bid_field', 'bds_field', 'rid_field', 'fpr_field', 'hab_field',
+            'cst_field', 'nat_field', 'lam_field', 'low_field', 'mid_field',
+            'hih_field'
+        ),
+        'flowlines': (
+            'rid_field', 'rds_field', 'tid_field', 'cat_field', 'len_field',
+            'sto_field'
+        ),
+        'catchments': ('cat_field', 'cds_field', 'wsa_field'),
+        'tributaries': ('tid_field', 'lak_field')
+    }
+    
+    # define fields for which values should be mapped to other values
+    val2Val = {
+        'barriers': {'bds_field': (P['slf_value'], None)},
+        'flowlines': {'rds_field': (P['slf_value'], None)},
+        'catchments': {'cds_field': (P['slf_value'], None)}
+    }
+    
+    # mapping from this dataset's fields to the formatted fields for 
+    #   create_hydrography()
+    fmap = {
+        'barriers': (
+            CRH_DAT_BAR, {
+                'bid_field': CRH_FLD_BID, 'bds_field': CRH_FLD_BDS,
+                'rid_field': CRH_FLD_RID, 'fpr_field': CRH_FLD_FPR,
+                'hab_field': CRH_FLD_HAB, 'cst_field': CRH_FLD_CST,
+                'nat_field': CRH_FLD_NAT, 'lam_field': CRH_FLD_LAM,
+                'low_field': CRH_FLD_P04, 'mid_field': CRH_FLD_P07,
+                'hih_field': CRH_FLD_P10
+            }
+        ),
+        'flowlines': (
+            CRH_DAT_FLO, {
+                'rid_field': CRH_FLD_RID, 'rds_field': CRH_FLD_RDS,
+                'tid_field': CRH_FLD_RID, 'cat_field': CRH_FLD_CAT,
+                'len_field': CRH_FLD_LEN, 'sto_field': CRH_FLD_STO
+            }
+        ),
+        'catchments': (
+            CRH_DAT_CAT, 
+            {
+                'cat_field': CRH_FLD_CAT, 'cds_field': CRH_FLD_CDS,
+                'wsa_field': CRH_FLD_WSA
+            }
+        ),
+        'tributaries': (
+            CRH_DAT_TRB, 
+            {'tid_field': CRH_FLD_TID, 'lak_field': CRH_FLD_LAK}
+        )
+    }
+        
+     
+    # ~~ DEFINE SUB-DATA FOR PROCESSING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    
+    # mapping from loaded raw value to formatted value
+    def map_value(dataset, field, value):
+        if (dataset in val2Val) and (field in val2Val[dataset]) and (value == val2Val[dataset][field][0]):
+            return val2Val[dataset][field][1]
+        else:
+            return value
             
+    # track index number in data for each field in the loaded data to
+    #   make it easy to refer to data in processing in later steps
+    fInd = {}
+    for k in fields:
+        fInd[k] = dict((fmap[k][1][fields[k][i]], i) for i in xrange(len(fields[k])))
             
+    # load data
+    data = {}
+    for datasetName in datasets:
+        datasetPath = datasets[datasetName]
+        datasetFields = [P[f] for f in fields[datasetName]]
+        cursor = arcpy.da.SearchCursor(datasetPath, datasetFields)
+        n = len(fields[datasetName])
+        
+        # load all rows at once, mapping values to new values where need-be
+        #   and otherwise just taking the value as is
+        try:
+            data[fmap[datasetName][0]] = (
+                fInd[datasetName],
+                [
+                    [
+                        map_value(
+                            datasetName, fields[datasetName][i], row[i]
+                        ) for i in xrange(n)
+                    ] for row in cursor
+                ]
+            )
+        except Exception as e:
+            print str(e)
+            import pdb; pdb.set_trace()
+            raise
+            
+        del cursor
+        
+    return data
+        
+    
             
 # ~~ create_hydrography() ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 def create_hydrography(data):
@@ -922,7 +1093,14 @@ def __test__():
             
     
 if __name__ == '__main__':
-    print __test__()
+    __test__()
+    
+    database = r'C:\Users\milt\Dropbox\UW Madison Post Doc\Data(Temp)\Barriers\hydro_update\GL_pruned_hydrography.mdb'
+    data = load_data(database)
+    
+    #     --- data table ---    row     --- fields dict ---  field
+    print data['barriers'][1]   [0]  [  data['barriers'][0] ['bid']  ]
+    
     ## load the database
     ## pass into create_hydrography
     
