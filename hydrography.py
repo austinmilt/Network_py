@@ -32,6 +32,7 @@ DAM_HIT = None
 RSX_WID = None
 RSX_LEN = None
 RSX_DRP = None
+RSX_BFW = None
 
 # OrderedCollection
 
@@ -40,6 +41,8 @@ CAT_ARE = None
 
 # load_data()
 LOD_DAT_BAR = 'barriers'
+LOD_DAT_RSX = 'RSX'
+LOD_DAT_DAM = 'dams_flowlines'
 LOD_DAT_FLO = 'flowlines'
 LOD_DAT_CAT = 'catchments'
 LOD_DAT_TRB = 'tributaries'
@@ -55,6 +58,9 @@ LOD_FLD_LAM = 'lamp_oid'
 LOD_FLD_P04 = 'PASS04'
 LOD_FLD_P07 = 'PASS07'
 LOD_FLD_P10 = 'PASS10'
+LOD_FLD_BFW = 'BANKFULL'
+LOD_FLD_DRP = 'DROP'
+LOD_FLD_HIT = 'HEIGHT'
 LOD_FLD_RDS = 'RID_DS'
 LOD_FLD_TID = 'TID'
 LOD_FLD_CAT = 'HydroID'
@@ -81,6 +87,12 @@ CRH_FLD_LAM = 'lamp'
 CRH_FLD_P04 = 'passlow'
 CRH_FLD_P07 = 'passmid'
 CRH_FLD_P10 = 'passhigh'
+CRH_FLD_BFW = 'bfw'
+CRH_FLD_DRP = 'drop'
+CRH_FLD_HIT = 'height'
+CRH_FLD_WID = 'width'
+CRH_FLD_BLN = 'length'
+CRH_FLD_TYP = 'isdam'
 CRH_FLD_RDS = 'rds'
 CRH_FLD_TID = 'tid'
 CRH_FLD_CAT = 'cid'
@@ -291,7 +303,8 @@ class RSX(Barrier):
         P = {
             'width': RSX_WID, # up- to down-stream width of road
             'drop': RSX_DRP, # vertical height of dam
-            'length': RSX_LEN # river spanning length of rsx
+            'length': RSX_LEN, # river spanning length of rsx
+            'bfw': RSX_BFW, # bankfull width of the stream at the crossing
         }
         P.update(dict((k.lower(), attributes[k]) for k in attributes))
         for attribute in P:
@@ -302,7 +315,7 @@ class RSX(Barrier):
         
         super(RSX, self).__setattr__(attribute, value)
         
-        if attribute in ('width', 'drop', 'length'):
+        if attribute in ('width', 'drop', 'length', 'bfw'):
             if (value is not None) and (value < 0):
                 raise ValueError('RSX dimensions must be non-negative.')
     
@@ -738,8 +751,92 @@ class Lake(OrderedCollection):
         """
         return sum([trib.area_all(ignoreNone) for trib in self.tributaries])
         
+        
+        
+# ~~ HYDROGRAPHY ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+class Hydrography(object):
+    """
+    Hydrography is a simple collection of Lakes with methods to access all
+    features of a certain type.
+    """
+    
+    def __init__(self, lakes, **attributes):
+        
+        # set self attributes
+        for k in attributes: setattr(self, k, attributes[k])
+        for lake in lakes:
+            assert isinstance(lake, Lake), 'Hydrography lakes must be Lake instances.'
+        self.lakes = set(lakes)
+        
+        
+    def get_objects(self, objType):
+        """Returns all objects of a given class in the Hydrography network."""
+        objects = set()
+        
+        # return Lakes
+        if objType is Lake:
+            objects.update(self.lakes)
+            
+        # loop through Lakes to get return objects
+        else:
+            for lake in self.lakes:
+            
+                # return Tributaries
+                if objType is Tributary:
+                    objects.update(lake.tributaries)
+                    
+                # loop through Tributaries to get return objects
+                else:
+                    for tributary in lake.tributaries:
+                        
+                        # return reaches
+                        if objType is Reach:
+                            objects.update(tributary.reaches)
+                            
+                        # return catchments
+                        elif objType is Catchment:
+                            objects.update(tributary.catchments)
+                            
+                        # loop through reaches to get barriers
+                        else:
+                            for reach in tributary.reaches:
+                            
+                                # return barriers
+                                if objType is Barrier:
+                                    objects.update(reach.barriers)
+                                    
+                                # unknown type
+                                else:
+                                    raise TypeError('Unknown return type: %s' % objType.__class__.__name__)
+        
+        return objects
+        
+    
+    def get_barriers(self):
+        """Returns a set of all barriers in the Hydrography network."""
+        return self.get_objects(Barrier)
 
 
+    def get_reaches(self):
+        """Returns a set of all reaches in the Hydrography network."""
+        return self.get_objects(Reach)
+        
+        
+    def get_catchments(self):
+        """Returns a set of all catchments in the Hydrography network."""
+        return self.get_objects(Catchment)    
+        
+        
+    def get_tributaries(self):
+        """Returns a set of all reaches in the Hydrography network."""
+        return self.get_objects(Tributary)
+
+        
+    def get_lakes(self):
+        """Returns a set of all Lakes in the Hydrography network."""
+        return self.get_objects(Lake)
+        
+        
         
 # ########################################################################### #
 # ################################ FUNCTIONS ################################ #
@@ -758,6 +855,10 @@ def load_data(database, **options):
         
             barriers: name of the barriers dataset in the database. Default is
                 LOD_DAT_BAR
+            rsx: name of the RSX dataset in the database. Default is 
+                LOD_DAT_RSX
+            dams: name of the dams dataset in the database: Default is 
+                LOD_DAT_DAM
             flowlines: name of the flowlines dataset in the database. Default
                 LOD_DAT_FLO
             catchments: name of the catchments dataset in the database. Default
@@ -786,6 +887,12 @@ def load_data(database, **options):
                 LOD_FLD_P07    
             hih_field: high-passability field in barriers dataset. Default is
                 LOD_FLD_P10
+            bfw_field: bankfull width field in the RSX dataset. Default is
+                LOD_FLD_BFW
+            drp_field: culvert drop height in the RSX dataset. Default is
+                LOD_FLD_DRP
+            hit_field: dam height field in the dams dataset. Default is
+                LOD_FLD_HIT
             rds_field: flowline ID field of next downstream flowline in 
                 flowlines dataset. Default is LOD_FLD_RDS
             tid_field: tributary ID field in flowlines and tributaries dataset.
@@ -815,16 +922,19 @@ def load_data(database, **options):
     P = {
         'barriers': LOD_DAT_BAR, 'flowlines': LOD_DAT_FLO,
         'catchments': LOD_DAT_CAT, 'tributaries': LOD_DAT_TRB, 
+        'rsx': LOD_DAT_RSX, 'dams': LOD_DAT_DAM,
         'bid_field': LOD_FLD_BID, 'bds_field': LOD_FLD_BDS,
         'rid_field': LOD_FLD_RID, 'nat_field': LOD_FLD_NAT,
         'fpr_field': LOD_FLD_FPR, 'hab_field': LOD_FLD_HAB,
         'cst_field': LOD_FLD_CST, 'lam_field': LOD_FLD_LAM,
         'low_field': LOD_FLD_P04, 'mid_field': LOD_FLD_P07,
-        'hih_field': LOD_FLD_P10, 'rds_field': LOD_FLD_RDS,
+        'hih_field': LOD_FLD_P10, 'bfw_field': LOD_FLD_BFW,
+        'drp_field': LOD_FLD_DRP, 'rds_field': LOD_FLD_RDS,
         'tid_field': LOD_FLD_TID, 'cat_field': LOD_FLD_CAT,
         'len_field': LOD_FLD_LEN, 'sto_field': LOD_FLD_STO,
         'wsa_field': LOD_FLD_WSA, 'lak_field': LOD_FLD_LAK,
-        'cds_field': LOD_FLD_CDS, 'slf_value': LOD_VAL_SLF
+        'cds_field': LOD_FLD_CDS, 'slf_value': LOD_VAL_SLF,
+        'hit_field': LOD_FLD_HIT
         
     }
     for k in options: P[k.lower()] = options[k]
@@ -835,6 +945,8 @@ def load_data(database, **options):
     # define datasets for loading
     datasets = {
         'barriers': os.path.join(database, P['barriers']),
+        'rsx': os.path.join(database, P['rsx']),
+        'dams': os.path.join(database, P['dams']),
         'flowlines': os.path.join(database, P['flowlines']),
         'catchments': os.path.join(database, P['catchments']),
         'tributaries': os.path.join(database, P['tributaries'])
@@ -847,6 +959,8 @@ def load_data(database, **options):
             'cst_field', 'nat_field', 'lam_field', 'low_field', 'mid_field',
             'hih_field'
         ),
+        'rsx': ('bid_field', 'drp_field', 'bfw_field'),
+        'dams': ('bid_field', 'hit_field',),
         'flowlines': (
             'rid_field', 'rds_field', 'tid_field', 'cat_field', 'len_field',
             'sto_field'
@@ -872,13 +986,25 @@ def load_data(database, **options):
                 'hab_field': CRH_FLD_HAB, 'cst_field': CRH_FLD_CST,
                 'nat_field': CRH_FLD_NAT, 'lam_field': CRH_FLD_LAM,
                 'low_field': CRH_FLD_P04, 'mid_field': CRH_FLD_P07,
-                'hih_field': CRH_FLD_P10
+                'hih_field': CRH_FLD_P10, 'bfw_field': CRH_FLD_BFW,
+                'drp_field': CRH_FLD_DRP, 'hit_field': CRH_FLD_HIT
             }
         ),
+        'rsx': ( # placeholders to keep code from breaking
+            'rsx', {
+                'bid_field': 'bid_field', 'bfw_field': 'bfw_field', 
+                'drp_field': 'drp_field'
+            }
+        ), 
+        'dams': ( # placeholders to keep code from breaking
+            'dams', {
+            'bid_field': 'bid_field', 'hit_field': 'hit_field'
+            }
+        ), 
         'flowlines': (
             CRH_DAT_FLO, {
                 'rid_field': CRH_FLD_RID, 'rds_field': CRH_FLD_RDS,
-                'tid_field': CRH_FLD_RID, 'cat_field': CRH_FLD_CAT,
+                'tid_field': CRH_FLD_TID, 'cat_field': CRH_FLD_CAT,
                 'len_field': CRH_FLD_LEN, 'sto_field': CRH_FLD_STO
             }
         ),
@@ -910,6 +1036,21 @@ def load_data(database, **options):
     fInd = {}
     for k in fields:
         fInd[k] = dict((fmap[k][1][fields[k][i]], i) for i in xrange(len(fields[k])))
+    
+    # do the same for rsx and dams, but adding onto barriers instead of 
+    #   creating separate for roads and dams
+    extraBarFields = ('rsx', 'dams')
+    for k in extraBarFields:
+        nBarField = len(fInd['barriers'])
+        fInd['barriers'].update(
+            dict(
+                (fmap['barriers'][1][fields[k][i]], i+nBarField-1)
+                for i in xrange(1, len(fields[k])) # skip bid field
+            )
+        )
+    
+    fInd['barriers'][CRH_FLD_TYP] = len(fInd['barriers'])
+        
             
     # load data
     data = {}
@@ -921,23 +1062,46 @@ def load_data(database, **options):
         
         # load all rows at once, mapping values to new values where need-be
         #   and otherwise just taking the value as is
-        try:
-            data[fmap[datasetName][0]] = (
-                fInd[datasetName],
+        data[fmap[datasetName][0]] = (
+            fInd[datasetName],
+            [
                 [
-                    [
-                        map_value(
-                            datasetName, fields[datasetName][i], row[i]
-                        ) for i in xrange(n)
-                    ] for row in cursor
-                ]
-            )
-        except Exception as e:
-            print str(e)
-            import pdb; pdb.set_trace()
-            raise
+                    map_value(
+                        datasetName, fields[datasetName][i], row[i]
+                    ) for i in xrange(n)
+                ] for row in cursor
+            ]
+        )
             
         del cursor
+        
+    # append rsx and dam data on barrier data
+    rowInds = {}
+    for k in extraBarFields:
+        dataTable = data[k][1]
+        nRows = len(dataTable)
+        idInd = data[k][0]['bid_field']
+        rowInds[k] = dict((dataTable[i][idInd], i) for i in xrange(nRows))
+    
+    newBarName = fmap['barriers'][0]
+    newBarIDName = fmap['barriers'][1]['bid_field']
+    newBarIDInd = fInd['barriers'][newBarIDName]
+    fieldLen = dict((k, len(fields[k])-1) for k in extraBarFields)
+    for row in data[newBarName][1]:
+        bid = row[newBarIDInd]
+        isDam = False
+        for k in extraBarFields:
+        
+            # add data from the rsx and dam datasets
+            if bid in rowInds[k]:
+                row.extend(data[k][1][rowInds[k][bid]][1:])
+                if k == 'dams': isDam = True
+                
+            # populate with empty list to maintain size equality
+            else:
+                row.extend([None]*fieldLen[k])
+                
+        row.append(isDam)
         
     return data
         
@@ -953,11 +1117,153 @@ def create_hydrography(data):
         
     OUTPUTS: Hydrography object with hydrography sub-objects in the network.
     """
-    pass
     
+    # ~~ CREATE BARRIERS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    fields, table = data[CRH_DAT_BAR]
+    barriers = {}
+    passabilityFields = (CRH_FLD_P04, CRH_FLD_P07, CRH_FLD_P10) 
+    reachBarriers = {}
+    for row in table:
+        oid = row[fields[CRH_FLD_BID]]
+        passabilities = dict((k, row[fields[k]]) for k in passabilityFields)
+        attributes = {
+            'id': oid, 'fprop': row[fields[CRH_FLD_FPR]], 
+            'country': row[fields[CRH_FLD_NAT]],
+            'cost': row[fields[CRH_FLD_CST]], 'passabilities': passabilities
+        }
+        
+        # optional fields
+        if CRH_FLD_WID in fields:
+            attributes['width'] = row[fields[CRH_FLD_HIT]]
+        if CRH_FLD_BLN in fields:
+            attributes['length'] = row[fields[CRH_FLD_BLN]]
+                
+        # dam specific attributes and create Dam
+        isDam = row[fields[CRH_FLD_TYP]]
+        if isDam:
+            attributes['height'] = row[fields[CRH_FLD_HIT]]
+            barrier = Dam(**attributes)
+        
+        # RSX specific attributes and create RSX
+        else:
+            attributes['drop'] = row[fields[CRH_FLD_HIT]]
+            attributes['bfw'] = row[fields[CRH_FLD_BFW]]
+            barrier = RSX(**attributes)
+            
+        # add to barriers set and also keep track of the other
+        #   necessary info (downstream id and reach id)
+        barriers[oid] = (
+            barrier, row[fields[CRH_FLD_BDS]]
+        )
+        
+        # record set of barriers for each reach
+        rid = row[fields[CRH_FLD_RID]]
+        if rid not in reachBarriers:
+            reachBarriers[rid] = []
+        reachBarriers[rid].append(barrier)
+            
+    # set barrier downstream objects
+    for oid in barriers:
+        if barriers[oid][1] is None: barriers[oid][0].down = barriers[oid][0]
+        else: barriers[oid][0].down = barriers[barriers[oid][1]][0]
+    
+    
+    # ~~ CREATE REACHES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    # create reaches that contain barriers
+    fields, table = data[CRH_DAT_FLO]
+    reaches = {}
+    catchmentReaches = {}
+    tributaryReaches = {}
+    for row in table:
+    
+        # define basic attributes
+        oid = row[fields[CRH_FLD_RID]]
+        attributes = {
+            'id': oid, 'length': row[fields[CRH_FLD_LEN]], 
+            'size': row[fields[CRH_FLD_STO]]
+        }        
+        
+        # create the reach and keep track of downstream reach and catchment
+        reach = Reach(reachBarriers.get(oid, []), **attributes)
+        reaches[oid] = (
+            reach, row[fields[CRH_FLD_RDS]]
+        )
+        
+        # record set of reaches for each catchment
+        cid = row[fields[CRH_FLD_CAT]]
+        if cid not in catchmentReaches:
+            catchmentReaches[cid] = []
+        catchmentReaches[cid].append(reach)
+        
+        # record set of reaches for each tributary
+        tid = row[fields[CRH_FLD_TID]]
+        if tid not in tributaryReaches:
+            tributaryReaches[tid] = []
+        tributaryReaches[tid].append(reach)
+        
+    # set reach downstream reaches
+    for oid in reaches:
+        if reaches[oid][1] is None: reaches[oid][0].down = reaches[oid][0]
+        else: reaches[oid][0].down = reaches[reaches[oid][1]][0]
+    
+    
+    # ~~ CREATE CATCHMENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    # create catchments that contain reaches
+    fields, table = data[CRH_DAT_CAT]
+    catchments = {}
+    for row in table:
+        
+        # define basic attributes
+        oid = row[fields[CRH_FLD_CAT]]
+        attributes = {'id': oid, 'area': row[fields[CRH_FLD_WSA]]}
+        
+        # create the catchment and keep track of downstream catchment
+        catchment = Catchment(catchmentReaches.get(oid, []), **attributes)
+        catchments[oid] = (
+            catchment, row[fields[CRH_FLD_CDS]]
+        )
+        
+    # set catchment downstream catchments
+    for oid in catchments:
+        if catchments[oid][1] is None: catchments[oid][0].down = catchments[oid][0]
+        else: catchments[oid][0].down = catchments[catchments[oid][1]][0]
+    
+    
+    # ~~ CREATE TRIBUTARIES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    # create tributaries that contain reaches and catchments
+    fields, table = data[CRH_DAT_TRB]
+    tributaries = {}
+    lakeTributaries = {}
+    for row in table:
+        
+        # define basic attributes
+        oid = row[fields[CRH_FLD_TID]]
+        attributes = {'id': oid}
+        
+        # create the tribuary and keep track of lake
+        tributary = Tributary(tributaryReaches.get(oid, []), **attributes)
+        tributaries[oid] = tributary
+        
+        # record set of tributaries for each lake
+        lid = row[fields[CRH_FLD_LAK]]
+        if lid not in lakeTributaries:
+            lakeTributaries[lid] = []
+        lakeTributaries[lid].append(tributary)
+        
+        
+    # ~~ CREATE LAKES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    # create lakes that contain tributaries
+    lakes = [Lake(lakeTributaries[lakeID], id=lakeID) for lakeID in lakeTributaries]
+    
+    
+    # ~~ CREATE HYDROGRAPHY ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+    # create hydrography that contains everything
+    hydrography = Hydrography(lakes)
+    
+    return hydrography
     
 
-def __test__():
+def __test__(verbose=False):
 
     # Test Data
     
@@ -1079,7 +1385,8 @@ def __test__():
     for test in tests:
         try:
             result = eval(test)
-            if result == True: print 'PASSED: %s' % test
+            if result == True:
+                if verbose: print 'PASSED: %s' % test
             else:
                 print 'FAILED: %s' % test
                 failures += 1
@@ -1095,12 +1402,9 @@ def __test__():
 if __name__ == '__main__':
     __test__()
     
-    database = r'C:\Users\milt\Dropbox\UW Madison Post Doc\Data(Temp)\Barriers\hydro_update\GL_pruned_hydrography.mdb'
+    database = r'C:\Users\Austin\Dropbox\UW Madison Post Doc\Data(Temp)\Barriers\hydro_update\GL_pruned_hydrography.mdb'
     data = load_data(database)
+    hydrography = create_hydrography(data)
     
-    #     --- data table ---    row     --- fields dict ---  field
-    print data['barriers'][1]   [0]  [  data['barriers'][0] ['bid']  ]
-    
-    ## load the database
-    ## pass into create_hydrography
+    import pdb; pdb.set_trace()
     

@@ -7,7 +7,6 @@ info
 *.gdb
 *.shp
 *.tif
-*.png
 
 # Windows image file caches
 Thumbs.db
