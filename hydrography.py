@@ -2,7 +2,7 @@
 #   with barriers, linked classes and attributes
 
 # Created 11/23/2015
-# Updated 11/25/2015
+# Updated 12/01/2015
 # Author: Austin Milt
 # ArcGIS version: 10.3.1
 # Python version: 2.7.8
@@ -39,36 +39,6 @@ RSX_BFW = None
 # Catchment
 CAT_ARE = None
 
-# load_data()
-LOD_DAT_BAR = 'barriers'
-LOD_DAT_RSX = 'RSX'
-LOD_DAT_DAM = 'dams_flowlines'
-LOD_DAT_FLO = 'flowlines'
-LOD_DAT_CAT = 'catchments'
-LOD_DAT_TRB = 'tributaries'
-LOD_FLD_BID = 'BID'
-LOD_FLD_BDS = 'BID_DS'
-LOD_FLD_RID = 'RID'
-LOD_FLD_NAT = 'NATION'
-LOD_FLD_LAK = 'LAKE'
-LOD_FLD_FPR = 'F_PROP'
-LOD_FLD_HAB = 'HAB_UP'
-LOD_FLD_CST = 'COST'
-LOD_FLD_LAM = 'lamp_oid'
-LOD_FLD_P04 = 'PASS04'
-LOD_FLD_P07 = 'PASS07'
-LOD_FLD_P10 = 'PASS10'
-LOD_FLD_BFW = 'BANKFULL'
-LOD_FLD_DRP = 'DROP'
-LOD_FLD_HIT = 'HEIGHT'
-LOD_FLD_RDS = 'RID_DS'
-LOD_FLD_TID = 'TID'
-LOD_FLD_CAT = 'HydroID'
-LOD_FLD_CDS = 'HydroID_DS'
-LOD_FLD_WSA = 'WSAKM2'
-LOD_FLD_LEN = 'Shape_Length'
-LOD_FLD_STO = 'STRAHLER'
-LOD_VAL_SLF = -1
 
 # create_hydrography()
 CRH_DAT_BAR = 'barriers'
@@ -757,16 +727,171 @@ class Lake(OrderedCollection):
 class Hydrography(object):
     """
     Hydrography is a simple collection of Lakes with methods to access all
-    features of a certain type.
+    features of a certain type, and also automatically processes formatted
+    inputs to create the hydrography object.
     """
     
-    def __init__(self, lakes, **attributes):
+    def __init__(self, data, **attributes):
         
         # set self attributes
         for k in attributes: setattr(self, k, attributes[k])
+        self.__process_data__(data)
+            
+        
+    def __process_data__(self, data):
+        """Processes formatted data as returned by load_data and modifies self."""
+        
+        # ~~ CREATE BARRIERS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+        fields, table = data[CRH_DAT_BAR]
+        barriers = {}
+        passabilityFields = (CRH_FLD_P04, CRH_FLD_P07, CRH_FLD_P10) 
+        reachBarriers = {}
+        for row in table:
+            oid = row[fields[CRH_FLD_BID]]
+            passabilities = dict((k, row[fields[k]]) for k in passabilityFields)
+            attributes = {
+                'id': oid, 'fprop': row[fields[CRH_FLD_FPR]], 
+                'country': row[fields[CRH_FLD_NAT]],
+                'cost': row[fields[CRH_FLD_CST]], 'passabilities': passabilities
+            }
+            
+            # optional fields
+            if CRH_FLD_WID in fields:
+                attributes['width'] = row[fields[CRH_FLD_HIT]]
+            if CRH_FLD_BLN in fields:
+                attributes['length'] = row[fields[CRH_FLD_BLN]]
+                    
+            # dam specific attributes and create Dam
+            isDam = row[fields[CRH_FLD_TYP]]
+            if isDam:
+                attributes['height'] = row[fields[CRH_FLD_HIT]]
+                barrier = Dam(**attributes)
+            
+            # RSX specific attributes and create RSX
+            else:
+                attributes['drop'] = row[fields[CRH_FLD_HIT]]
+                attributes['bfw'] = row[fields[CRH_FLD_BFW]]
+                barrier = RSX(**attributes)
+                
+            # add to barriers set and also keep track of the other
+            #   necessary info (downstream id and reach id)
+            barriers[oid] = (
+                barrier, row[fields[CRH_FLD_BDS]]
+            )
+            
+            # record set of barriers for each reach
+            rid = row[fields[CRH_FLD_RID]]
+            if rid not in reachBarriers:
+                reachBarriers[rid] = []
+            reachBarriers[rid].append(barrier)
+                
+        # set barrier downstream objects
+        for oid in barriers:
+            if barriers[oid][1] is None: barriers[oid][0].down = barriers[oid][0]
+            else: barriers[oid][0].down = barriers[barriers[oid][1]][0]
+        
+        
+        # ~~ CREATE REACHES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+        # create reaches that contain barriers
+        fields, table = data[CRH_DAT_FLO]
+        reaches = {}
+        catchmentReaches = {}
+        tributaryReaches = {}
+        for row in table:
+        
+            # define basic attributes
+            oid = row[fields[CRH_FLD_RID]]
+            attributes = {
+                'id': oid, 'length': row[fields[CRH_FLD_LEN]], 
+                'size': row[fields[CRH_FLD_STO]]
+            }        
+            
+            # create the reach and keep track of downstream reach and catchment
+            reach = Reach(reachBarriers.get(oid, []), **attributes)
+            reaches[oid] = (
+                reach, row[fields[CRH_FLD_RDS]]
+            )
+            
+            # record set of reaches for each catchment
+            cid = row[fields[CRH_FLD_CAT]]
+            if cid not in catchmentReaches:
+                catchmentReaches[cid] = []
+            catchmentReaches[cid].append(reach)
+            
+            # record set of reaches for each tributary
+            tid = row[fields[CRH_FLD_TID]]
+            if tid not in tributaryReaches:
+                tributaryReaches[tid] = []
+            tributaryReaches[tid].append(reach)
+            
+        # set reach downstream reaches
+        for oid in reaches:
+            if reaches[oid][1] is None: reaches[oid][0].down = reaches[oid][0]
+            else: reaches[oid][0].down = reaches[reaches[oid][1]][0]
+        
+        
+        # ~~ CREATE CATCHMENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+        # create catchments that contain reaches
+        fields, table = data[CRH_DAT_CAT]
+        catchments = {}
+        for row in table:
+            
+            # define basic attributes
+            oid = row[fields[CRH_FLD_CAT]]
+            attributes = {'id': oid, 'area': row[fields[CRH_FLD_WSA]]}
+            
+            # create the catchment and keep track of downstream catchment
+            catchment = Catchment(catchmentReaches.get(oid, []), **attributes)
+            catchments[oid] = (
+                catchment, row[fields[CRH_FLD_CDS]]
+            )
+            
+        # set catchment downstream catchments
+        for oid in catchments:
+            if catchments[oid][1] is None: catchments[oid][0].down = catchments[oid][0]
+            else: catchments[oid][0].down = catchments[catchments[oid][1]][0]
+        
+        
+        # ~~ CREATE TRIBUTARIES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+        # create tributaries that contain reaches and catchments
+        fields, table = data[CRH_DAT_TRB]
+        tributaries = {}
+        lakeTributaries = {}
+        for row in table:
+            
+            # define basic attributes
+            oid = row[fields[CRH_FLD_TID]]
+            attributes = {'id': oid}
+            
+            # create the tribuary and keep track of lake
+            tributary = Tributary(tributaryReaches.get(oid, []), **attributes)
+            tributaries[oid] = tributary
+            
+            # record set of tributaries for each lake
+            lid = row[fields[CRH_FLD_LAK]]
+            if lid not in lakeTributaries:
+                lakeTributaries[lid] = []
+            lakeTributaries[lid].append(tributary)
+            
+            
+        # ~~ CREATE LAKES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+        # create lakes that contain tributaries
+        lakes = [Lake(lakeTributaries[lakeID], id=lakeID) for lakeID in lakeTributaries]
+        
+        
+        # ~~ CREATE HYDROGRAPHY ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+        # create hydrography that contains everything
+        self.lakes = lakes
+        
+        # add warning about lost catchments
+        catCount = 0
         for lake in lakes:
-            assert isinstance(lake, Lake), 'Hydrography lakes must be Lake instances.'
-        self.lakes = set(lakes)
+            for tributary in lake.tributaries:
+                catCount += len(tributary.catchments)
+                
+        diff = len(data[CRH_DAT_CAT][1]) - catCount
+        if diff > 0:
+            print 'WARNING: Automatically discarded %i catchments with no associated reaches.' % diff
         
         
     def get_objects(self, objType):
@@ -837,574 +962,19 @@ class Hydrography(object):
         return self.get_objects(Lake)
         
         
-        
-# ########################################################################### #
-# ################################ FUNCTIONS ################################ #
-# ########################################################################### #
-            
-# ~~ load_data() ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-def load_data(database, **options):
-    """
-    LOAD_DATA() loads hydrography data from an mdb Access database using arcpy
-    and converts it into the format for create_hydrography().
-    
-    INPUT:
-        database    = path to database file
-        
-        **options   = optional keyword arguments. Value arguments are:
-        
-            barriers: name of the barriers dataset in the database. Default is
-                LOD_DAT_BAR
-            rsx: name of the RSX dataset in the database. Default is 
-                LOD_DAT_RSX
-            dams: name of the dams dataset in the database: Default is 
-                LOD_DAT_DAM
-            flowlines: name of the flowlines dataset in the database. Default
-                LOD_DAT_FLO
-            catchments: name of the catchments dataset in the database. Default
-                is LOD_DAT_CAT
-            tributaries: name of the tributaries dataset in the database.
-                Default is LOD_DAT_TRB
-            bid_field: unique barrier ID field in barriers dataset. Default is
-                LOD_FLD_BID
-            bds_field: barrier downstream ID field in barriers dataset. Default
-                is LOD_FLD_BDS
-            rid_field: flowline ID field in barriers and flowlines dataset. 
-                Default is LOD_FLD_RID
-            nat_field: country of location of barrier in barriers dataset.
-                Default is LOD_FLD_NAT
-            fpr_field: proportion along flowline field in barriers dataset.
-                Default is LOD_FLD_FPR
-            hab_field: upstream habitat field in barriers dataset. Default is
-                LOD_FLD_HAB
-            cst_field: cost of barrier removal field in barriers dataset.
-                Default is LOD_FLD_CST
-            lam_field: lamprey first barrier ID field in barriers dataset.
-                Default is LOD_FLD_LAM
-            low_field: low-passability field in barriers dataset. Default is
-                LOD_FLD_P04
-            mid_field: mid-passability field in barriers dataset. Default is
-                LOD_FLD_P07    
-            hih_field: high-passability field in barriers dataset. Default is
-                LOD_FLD_P10
-            bfw_field: bankfull width field in the RSX dataset. Default is
-                LOD_FLD_BFW
-            drp_field: culvert drop height in the RSX dataset. Default is
-                LOD_FLD_DRP
-            hit_field: dam height field in the dams dataset. Default is
-                LOD_FLD_HIT
-            rds_field: flowline ID field of next downstream flowline in 
-                flowlines dataset. Default is LOD_FLD_RDS
-            tid_field: tributary ID field in flowlines and tributaries dataset.
-                Default is LOD_FLD_TID
-            cat_field: catchment ID field in flowlines and catchments dataset. 
-                Default is LOD_FLD_CAT
-            cds_field: catchment downstream ID field in catchments dataset.
-                Default is LOD_FLD_CDS
-            len_field: flowline's length field in flowlines dataset. Default
-                is LOD_FLD_LEN
-            sto_field: flowline's stream order field in flowlines dataset.
-                Default is LOD_FLD_STO
-            wsa_field: catchment's area field in catchments dataset. Default
-                is LOD_FLD_WSA
-            lak_field: lake into which tributary flows in tributaries dataset. 
-                Default is LOD_FLD_LAK
-            slf_value: value that indicates the downstream barrier, flowline,
-                or catchment is itself. Default is LOD_VAL_SLF
-                
-    OUTPUT: a dictionary formatted for create_hydrography()
-    """
-    
-    # imports
-    import arcpy, os
-    
-    # update options
-    P = {
-        'barriers': LOD_DAT_BAR, 'flowlines': LOD_DAT_FLO,
-        'catchments': LOD_DAT_CAT, 'tributaries': LOD_DAT_TRB, 
-        'rsx': LOD_DAT_RSX, 'dams': LOD_DAT_DAM,
-        'bid_field': LOD_FLD_BID, 'bds_field': LOD_FLD_BDS,
-        'rid_field': LOD_FLD_RID, 'nat_field': LOD_FLD_NAT,
-        'fpr_field': LOD_FLD_FPR, 'hab_field': LOD_FLD_HAB,
-        'cst_field': LOD_FLD_CST, 'lam_field': LOD_FLD_LAM,
-        'low_field': LOD_FLD_P04, 'mid_field': LOD_FLD_P07,
-        'hih_field': LOD_FLD_P10, 'bfw_field': LOD_FLD_BFW,
-        'drp_field': LOD_FLD_DRP, 'rds_field': LOD_FLD_RDS,
-        'tid_field': LOD_FLD_TID, 'cat_field': LOD_FLD_CAT,
-        'len_field': LOD_FLD_LEN, 'sto_field': LOD_FLD_STO,
-        'wsa_field': LOD_FLD_WSA, 'lak_field': LOD_FLD_LAK,
-        'cds_field': LOD_FLD_CDS, 'slf_value': LOD_VAL_SLF,
-        'hit_field': LOD_FLD_HIT
-        
-    }
-    for k in options: P[k.lower()] = options[k]
-    
-    
-    # ~~ DEFINE CONSTANTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    
-    # define datasets for loading
-    datasets = {
-        'barriers': os.path.join(database, P['barriers']),
-        'rsx': os.path.join(database, P['rsx']),
-        'dams': os.path.join(database, P['dams']),
-        'flowlines': os.path.join(database, P['flowlines']),
-        'catchments': os.path.join(database, P['catchments']),
-        'tributaries': os.path.join(database, P['tributaries'])
-    }
-    
-    # define fields to load for each dataset
-    fields = {
-        'barriers': (
-            'bid_field', 'bds_field', 'rid_field', 'fpr_field', 'hab_field',
-            'cst_field', 'nat_field', 'lam_field', 'low_field', 'mid_field',
-            'hih_field'
-        ),
-        'rsx': ('bid_field', 'drp_field', 'bfw_field'),
-        'dams': ('bid_field', 'hit_field',),
-        'flowlines': (
-            'rid_field', 'rds_field', 'tid_field', 'cat_field', 'len_field',
-            'sto_field'
-        ),
-        'catchments': ('cat_field', 'cds_field', 'wsa_field'),
-        'tributaries': ('tid_field', 'lak_field')
-    }
-    
-    # define fields for which values should be mapped to other values
-    val2Val = {
-        'barriers': {'bds_field': (P['slf_value'], None)},
-        'flowlines': {'rds_field': (P['slf_value'], None)},
-        'catchments': {'cds_field': (P['slf_value'], None)}
-    }
-    
-    # mapping from this dataset's fields to the formatted fields for 
-    #   create_hydrography()
-    fmap = {
-        'barriers': (
-            CRH_DAT_BAR, {
-                'bid_field': CRH_FLD_BID, 'bds_field': CRH_FLD_BDS,
-                'rid_field': CRH_FLD_RID, 'fpr_field': CRH_FLD_FPR,
-                'hab_field': CRH_FLD_HAB, 'cst_field': CRH_FLD_CST,
-                'nat_field': CRH_FLD_NAT, 'lam_field': CRH_FLD_LAM,
-                'low_field': CRH_FLD_P04, 'mid_field': CRH_FLD_P07,
-                'hih_field': CRH_FLD_P10, 'bfw_field': CRH_FLD_BFW,
-                'drp_field': CRH_FLD_DRP, 'hit_field': CRH_FLD_HIT
-            }
-        ),
-        'rsx': ( # placeholders to keep code from breaking
-            'rsx', {
-                'bid_field': 'bid_field', 'bfw_field': 'bfw_field', 
-                'drp_field': 'drp_field'
-            }
-        ), 
-        'dams': ( # placeholders to keep code from breaking
-            'dams', {
-            'bid_field': 'bid_field', 'hit_field': 'hit_field'
-            }
-        ), 
-        'flowlines': (
-            CRH_DAT_FLO, {
-                'rid_field': CRH_FLD_RID, 'rds_field': CRH_FLD_RDS,
-                'tid_field': CRH_FLD_TID, 'cat_field': CRH_FLD_CAT,
-                'len_field': CRH_FLD_LEN, 'sto_field': CRH_FLD_STO
-            }
-        ),
-        'catchments': (
-            CRH_DAT_CAT, 
-            {
-                'cat_field': CRH_FLD_CAT, 'cds_field': CRH_FLD_CDS,
-                'wsa_field': CRH_FLD_WSA
-            }
-        ),
-        'tributaries': (
-            CRH_DAT_TRB, 
-            {'tid_field': CRH_FLD_TID, 'lak_field': CRH_FLD_LAK}
-        )
-    }
-        
-     
-    # ~~ DEFINE SUB-DATA FOR PROCESSING DATA ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    
-    # mapping from loaded raw value to formatted value
-    def map_value(dataset, field, value):
-        if (dataset in val2Val) and (field in val2Val[dataset]) and (value == val2Val[dataset][field][0]):
-            return val2Val[dataset][field][1]
-        else:
-            return value
-            
-    # track index number in data for each field in the loaded data to
-    #   make it easy to refer to data in processing in later steps
-    fInd = {}
-    for k in fields:
-        fInd[k] = dict((fmap[k][1][fields[k][i]], i) for i in xrange(len(fields[k])))
-    
-    # do the same for rsx and dams, but adding onto barriers instead of 
-    #   creating separate for roads and dams
-    extraBarFields = ('rsx', 'dams')
-    for k in extraBarFields:
-        nBarField = len(fInd['barriers'])
-        fInd['barriers'].update(
-            dict(
-                (fmap['barriers'][1][fields[k][i]], i+nBarField-1)
-                for i in xrange(1, len(fields[k])) # skip bid field
-            )
-        )
-    
-    fInd['barriers'][CRH_FLD_TYP] = len(fInd['barriers'])
-        
-            
-    # load data
-    data = {}
-    for datasetName in datasets:
-        datasetPath = datasets[datasetName]
-        datasetFields = [P[f] for f in fields[datasetName]]
-        cursor = arcpy.da.SearchCursor(datasetPath, datasetFields)
-        n = len(fields[datasetName])
-        
-        # load all rows at once, mapping values to new values where need-be
-        #   and otherwise just taking the value as is
-        data[fmap[datasetName][0]] = (
-            fInd[datasetName],
-            [
-                [
-                    map_value(
-                        datasetName, fields[datasetName][i], row[i]
-                    ) for i in xrange(n)
-                ] for row in cursor
-            ]
-        )
-            
-        del cursor
-        
-    # append rsx and dam data on barrier data
-    rowInds = {}
-    for k in extraBarFields:
-        dataTable = data[k][1]
-        nRows = len(dataTable)
-        idInd = data[k][0]['bid_field']
-        rowInds[k] = dict((dataTable[i][idInd], i) for i in xrange(nRows))
-    
-    newBarName = fmap['barriers'][0]
-    newBarIDName = fmap['barriers'][1]['bid_field']
-    newBarIDInd = fInd['barriers'][newBarIDName]
-    fieldLen = dict((k, len(fields[k])-1) for k in extraBarFields)
-    for row in data[newBarName][1]:
-        bid = row[newBarIDInd]
-        isDam = False
-        for k in extraBarFields:
-        
-            # add data from the rsx and dam datasets
-            if bid in rowInds[k]:
-                row.extend(data[k][1][rowInds[k][bid]][1:])
-                if k == 'dams': isDam = True
-                
-            # populate with empty list to maintain size equality
-            else:
-                row.extend([None]*fieldLen[k])
-                
-        row.append(isDam)
-        
-    return data
-        
-    
-            
-# ~~ create_hydrography() ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-def create_hydrography(data):
-    """
-    Creates a Hydrography object from formatted data.
-    
-    INPUTS:
-        data    = formatted hydrography data as returned by load_data()
-        
-    OUTPUTS: Hydrography object with hydrography sub-objects in the network.
-    """
-    
-    # ~~ CREATE BARRIERS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    fields, table = data[CRH_DAT_BAR]
-    barriers = {}
-    passabilityFields = (CRH_FLD_P04, CRH_FLD_P07, CRH_FLD_P10) 
-    reachBarriers = {}
-    for row in table:
-        oid = row[fields[CRH_FLD_BID]]
-        passabilities = dict((k, row[fields[k]]) for k in passabilityFields)
-        attributes = {
-            'id': oid, 'fprop': row[fields[CRH_FLD_FPR]], 
-            'country': row[fields[CRH_FLD_NAT]],
-            'cost': row[fields[CRH_FLD_CST]], 'passabilities': passabilities
-        }
-        
-        # optional fields
-        if CRH_FLD_WID in fields:
-            attributes['width'] = row[fields[CRH_FLD_HIT]]
-        if CRH_FLD_BLN in fields:
-            attributes['length'] = row[fields[CRH_FLD_BLN]]
-                
-        # dam specific attributes and create Dam
-        isDam = row[fields[CRH_FLD_TYP]]
-        if isDam:
-            attributes['height'] = row[fields[CRH_FLD_HIT]]
-            barrier = Dam(**attributes)
-        
-        # RSX specific attributes and create RSX
-        else:
-            attributes['drop'] = row[fields[CRH_FLD_HIT]]
-            attributes['bfw'] = row[fields[CRH_FLD_BFW]]
-            barrier = RSX(**attributes)
-            
-        # add to barriers set and also keep track of the other
-        #   necessary info (downstream id and reach id)
-        barriers[oid] = (
-            barrier, row[fields[CRH_FLD_BDS]]
-        )
-        
-        # record set of barriers for each reach
-        rid = row[fields[CRH_FLD_RID]]
-        if rid not in reachBarriers:
-            reachBarriers[rid] = []
-        reachBarriers[rid].append(barrier)
-            
-    # set barrier downstream objects
-    for oid in barriers:
-        if barriers[oid][1] is None: barriers[oid][0].down = barriers[oid][0]
-        else: barriers[oid][0].down = barriers[barriers[oid][1]][0]
-    
-    
-    # ~~ CREATE REACHES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    # create reaches that contain barriers
-    fields, table = data[CRH_DAT_FLO]
-    reaches = {}
-    catchmentReaches = {}
-    tributaryReaches = {}
-    for row in table:
-    
-        # define basic attributes
-        oid = row[fields[CRH_FLD_RID]]
-        attributes = {
-            'id': oid, 'length': row[fields[CRH_FLD_LEN]], 
-            'size': row[fields[CRH_FLD_STO]]
-        }        
-        
-        # create the reach and keep track of downstream reach and catchment
-        reach = Reach(reachBarriers.get(oid, []), **attributes)
-        reaches[oid] = (
-            reach, row[fields[CRH_FLD_RDS]]
-        )
-        
-        # record set of reaches for each catchment
-        cid = row[fields[CRH_FLD_CAT]]
-        if cid not in catchmentReaches:
-            catchmentReaches[cid] = []
-        catchmentReaches[cid].append(reach)
-        
-        # record set of reaches for each tributary
-        tid = row[fields[CRH_FLD_TID]]
-        if tid not in tributaryReaches:
-            tributaryReaches[tid] = []
-        tributaryReaches[tid].append(reach)
-        
-    # set reach downstream reaches
-    for oid in reaches:
-        if reaches[oid][1] is None: reaches[oid][0].down = reaches[oid][0]
-        else: reaches[oid][0].down = reaches[reaches[oid][1]][0]
-    
-    
-    # ~~ CREATE CATCHMENTS ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    # create catchments that contain reaches
-    fields, table = data[CRH_DAT_CAT]
-    catchments = {}
-    for row in table:
-        
-        # define basic attributes
-        oid = row[fields[CRH_FLD_CAT]]
-        attributes = {'id': oid, 'area': row[fields[CRH_FLD_WSA]]}
-        
-        # create the catchment and keep track of downstream catchment
-        catchment = Catchment(catchmentReaches.get(oid, []), **attributes)
-        catchments[oid] = (
-            catchment, row[fields[CRH_FLD_CDS]]
-        )
-        
-    # set catchment downstream catchments
-    for oid in catchments:
-        if catchments[oid][1] is None: catchments[oid][0].down = catchments[oid][0]
-        else: catchments[oid][0].down = catchments[catchments[oid][1]][0]
-    
-    
-    # ~~ CREATE TRIBUTARIES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    # create tributaries that contain reaches and catchments
-    fields, table = data[CRH_DAT_TRB]
-    tributaries = {}
-    lakeTributaries = {}
-    for row in table:
-        
-        # define basic attributes
-        oid = row[fields[CRH_FLD_TID]]
-        attributes = {'id': oid}
-        
-        # create the tribuary and keep track of lake
-        tributary = Tributary(tributaryReaches.get(oid, []), **attributes)
-        tributaries[oid] = tributary
-        
-        # record set of tributaries for each lake
-        lid = row[fields[CRH_FLD_LAK]]
-        if lid not in lakeTributaries:
-            lakeTributaries[lid] = []
-        lakeTributaries[lid].append(tributary)
-        
-        
-    # ~~ CREATE LAKES ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    # create lakes that contain tributaries
-    lakes = [Lake(lakeTributaries[lakeID], id=lakeID) for lakeID in lakeTributaries]
-    
-    
-    # ~~ CREATE HYDROGRAPHY ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    # create hydrography that contains everything
-    hydrography = Hydrography(lakes)
-    
-    return hydrography
-    
-
-def __test__(verbose=False):
-
-    # Test Data
-    
-    # Barriers
-    BA = Barrier(id='BA', country='USA', fprop=0.1, passabilities={'04':1.0, '03':0.4})
-    BB = Barrier(id='BB', country='USA', fprop=0.2, passabilities={'04':1.0, '03':0.4})
-    BC = Barrier(id='BC', country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
-    BD = Barrier(id='BD', country='USA', fprop=0.1, passabilities={'04':1.0, '03':0.4})
-    BE = Barrier(id='BE', country='USA', fprop=0.2, passabilities={'04':1.0, '03':0.4})
-    BF = Barrier(id='BF', country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
-    BG = Barrier(id='BG', country='USA', fprop=0.4, passabilities={'04':1.0, '03':0.4})
-    BH = Barrier(id='BH', country='USA', fprop=0.1, passabilities={'04':1.0, '03':0.4})
-    BI = Barrier(id='BI', country='USA', fprop=0.2, passabilities={'04':1.0, '03':0.4})
-    BJ = Barrier(id='BJ', country='USA', fprop=0.3, passabilities={'04':1.0, '03':0.4})
-    BK = Barrier(id='BK', country='USA', fprop=0.1, passabilities={'04':1.0, '03':0.4})
-    BL = Barrier(id='BL', country='USA', fprop=0.2, passabilities={'04':1.0, '03':0.4})
-    BM = Barrier(id='BM', country='USA', fprop=0.1, passabilities={'04':1.0, '03':0.4})
-    BN = Barrier(id='BN', country='USA', fprop=0.1, passabilities={'04':1.0, '03':0.4})
-    BA.down = BB
-    BB.down = BC
-    BC.down = BH
-    BD.down = BF
-    BE.down = BF
-    BF.down = BG
-    BG.down = BJ
-    BI.down = BJ
-    BK.down = BL
-    BL.down = BN
-    BM.down = BN
-
-    # Reaches
-    RA = Reach(id='RA', length=1.1, barriers=set([BA]))
-    RB = Reach(id='RB', length=1.2)
-    RC = Reach(id='RC', length=1.3, barriers=set([BB, BC]))
-    RD = Reach(id='RD', length=1.4)
-    RE = Reach(id='RE', length=1.5)
-    RF = Reach(id='RF', length=1.1, barriers=set([BD]))
-    RG = Reach(id='RG', length=1.2, barriers=set([BE]))
-    RH = Reach(id='RH', length=1.3, barriers=set([BF, BG]))
-    RI = Reach(id='RI', length=1.1, barriers=set([BH]))
-    RJ = Reach(id='RJ', length=1.2, barriers=set([BI]))
-    RK = Reach(id='RK', length=1.3)
-    RL = Reach(id='RL', length=1.4)
-    RM = Reach(id='RM', length=1.5)
-    RN = Reach(id='RN', length=1.6, barriers=set([BJ]))
-    RO = Reach(id='RO', length=1.7)
-    RP = Reach(id='RP', length=1.1, barriers=set([BK, BL]))
-    RQ = Reach(id='RQ', length=1.1)
-    RR = Reach(id='RR', length=1.2, barriers=set([BM]))
-    RS = Reach(id='RS', length=1.3)
-    RT = Reach(id='RT', length=1.1, barrieres=set([BN]))
-    RU = Reach(id='RU', length=1.2)
-    RV = Reach(id='RV', length=1.3)
-    RA.down = RC
-    RB.down = RC
-    RC.down = RE
-    RD.down = RE
-    RE.down = RI
-    RF.down = RH
-    RG.down = RH
-    RH.down = RK
-    RI.down = RO
-    RJ.down = RM
-    RK.down = RM
-    RL.down = RN
-    RM.down = RN
-    RN.down = RO
-    RP.down = RQ
-    RQ.down = RS
-    RR.down = RS
-    RS.down = RT
-    RT.down = RV
-    RU.down = RV
-
-    # Catchments
-    CA = Catchment(id='CA', area=10.1, reaches=set([RA, RB, RC, RD, RE]))
-    CB = Catchment(id='CB', area=10.2, reaches=set([RF, RG, RH]))
-    CC = Catchment(id='CC', area=10.1, reaches=set([RP]))
-    CD = Catchment(id='CD', area=10.3, reaches=set([RI, RJ, RK, RL, RM, RN, RO]))
-    CE = Catchment(id='CE', area=10.2, reaches=set([RQ, RR, RS]))
-    CF = Catchment(id='CF', area=10.3, reaches=set([RT, RU, RV]))
-    CA.down = CD
-    CB.down = CD
-    CC.down = CE
-    CE.down = CF
-    
-    # Tributaries
-    taReaches = CA.reaches.union(CB.reaches).union(CD.reaches)
-    TA = Tributary(taReaches)
-    tbReaches = CC.reaches.union(CE.reaches).union(CF.reaches)
-    TB = Tributary(tbReaches)
-    
-    LA = Lake([TA, TB])
-    
-    # Tests
-    epsilon = 1e5
-    tests = (
-        'RA.trace_down() == [RC, RE, RI, RO]', # reach's downstream trace is correct
-        'CC.trace_down() == [CE, CF]', # catchment's down-stream trace is correct
-        'BE.trace_down() == [BF, BG, BJ]', # barrier's down-stream trace is correct
-        'RS.catchment.trace_up(RS) == set([RR, RQ])', # reach's up-catchment trace is correct
-        'abs(CE.length_all() - (RS.length + RR.length + RQ.length)) < epsilon', # catchment's length_all is correct
-        'abs(RO.catchment.length_up(RO, levels=2) - (RN.length + RM.length + RL.length + RI.length)) < epsilon', # catchment's length-up is correct
-        'RG.catchment.length_down(RG) == RH.length', # catchment's length_down is correct
-        'RM.tributary.trace_up(RM) == set([RG, RJ, RF, RK, RH])', # reach's up-tributary-trace is correct
-        'CF.tributary.trace_up(CF) == set([CC, CE])', # catchment's up-tributary trace is correct
-        'BJ.tributary.trace_up(BJ) == set([BI, BF, BD, BG, BE])', # barrier's up-tributary trace is correct
-        'abs(CD.tributary.area_up(CD) - (CA.area + CB.area)) < epsilon', # tributary area_up is correct
-        'CB.tributary.area_down(CB) == CD.area', # tributary area_down is correct
-        'abs(RP.tributary.length_all() - sum([r.length for r in (RP, RQ, RR, RS, RT, RU, RV)])) < epsilon', # tributary's length_all is correct
-        'abs(RM.tributary.length_up(RM) - sum([r.length for r in (RJ, RK, RH, RF, RG)])) < epsilon', # tributary's length_up is correct
-        'abs(RM.tributary.length_down(RM) - sum([r.length for r in (RN, RO)])) < epsilon', # tributary's length_down is correct
-        'abs(LA.area_all() - (CA.area + CB.area + CC.area + CD.area + CE.area + CF.area)) < epsilon', # sum of areas matches in area_all function
-        'abs(LA.length_all() - sum([r.length for r in (RA, RB, RC, RD, RE, RF, RG, RH, RI, RJ, RK, RL, RM, RN, RO, RP, RQ, RR, RS, RT, RU, RV)])) < epsilon', # lake's length_all is correct
-        'BJ.reach.trace_up(BJ) == set()', # barriers with no upstream barriers have empty upstream set
-        'RL.tributary.length_up(RL) == 0.' # reaches without upstream reaches have up length == 0
-    )
-    failures = 0
-    for test in tests:
-        try:
-            result = eval(test)
-            if result == True:
-                if verbose: print 'PASSED: %s' % test
-            else:
-                print 'FAILED: %s' % test
-                failures += 1
-            
-        except Exception as e:
-            print 'FAILED with Exception (%s): %s' % (str(e), test)
-            failures += 1
-            
-    if failures > 0:
-        import pdb; pdb.set_trace()
-            
-    
 if __name__ == '__main__':
+
+    from __test__ import __test__
+    from load_data import load_hydro_mdb
     __test__()
     
     database = r'C:\Users\Austin\Dropbox\UW Madison Post Doc\Data(Temp)\Barriers\hydro_update\GL_pruned_hydrography.mdb'
-    data = load_data(database)
-    hydrography = create_hydrography(data)
+    data = load_hydro_mdb(database)
+    hydrography = Hydrography(data)
     
-    import pdb; pdb.set_trace()
+    print 'Total lakes: %i' % len(hydrography.get_lakes())
+    print 'Total catchments: %i' % len(hydrography.get_catchments())
+    print 'Total tributaries: %i' % len(hydrography.get_tributaries())
+    print 'Total reaches: %i' % len(hydrography.get_reaches())
+    print 'Total barriers: %i' % len(hydrography.get_barriers())
     
